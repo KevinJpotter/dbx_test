@@ -36,6 +36,19 @@ from dbx_test.fixtures.notebook import (
     notebook_test_session,
 )
 
+# Re-export pytest compatibility utilities
+from dbx_test.pytest_compat import (
+    parametrize,
+    skip,
+    skipif,
+    xfail,
+    mark,
+    get_marks,
+    should_skip,
+    get_xfail_info,
+    get_parametrize_info,
+)
+
 __all__ = [
     # Core classes
     "TestConfig",
@@ -55,5 +68,11 @@ __all__ = [
     "NotebookTestResult",
     "NotebookTestRunner",
     "notebook_test_session",
+    # Pytest compatibility (for notebook use without pytest installed)
+    "parametrize",
+    "skip",
+    "skipif",
+    "xfail",
+    "mark",
 ]
 

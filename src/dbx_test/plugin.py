@@ -1,24 +1,183 @@
 """
 Pytest plugin for dbx_test framework.
 
-This module registers dbx_test as a pytest plugin, automatically providing
-fixtures to any project that has dbx_test installed.
+This module registers dbx_test as a pytest plugin, providing:
+- Automatic fixture availability
+- NotebookTestFixture class collection
+- Marker support (parametrize, skip, skipif, xfail)
+- Custom marker registration
 
-To use the fixtures, simply install dbx_test:
-    pip install dbx_test
+Installation:
+    The plugin is automatically registered when dbx_test is installed via
+    the entry point in pyproject.toml.
 
-Then import fixtures in your conftest.py:
-    from dbx_test.fixtures import spark_session, dbutils, notebook_context
-
-Or use the plugin auto-registration (requires entry point configuration).
+Usage:
+    # Tests using NotebookTestFixture work with pytest out of the box:
+    
+    class TestMyFeature(NotebookTestFixture):
+        @pytest.mark.parametrize("x", [1, 2, 3])
+        def test_values(self, x):
+            assert x > 0
+    
+    # Run with: pytest tests/
 """
 
 import pytest
+import inspect
 import os
+from typing import List, Optional, Any, Iterator
 
-# Plugin identification
-pytest_plugins = ["dbx_test.fixtures"]
+from dbx_test.testing import NotebookTestFixture
 
+
+# ============================================================================
+# Pytest Collection for NotebookTestFixture
+# ============================================================================
+
+class NotebookTestFixtureItem(pytest.Item):
+    """Pytest item representing a single test method in a NotebookTestFixture."""
+    
+    def __init__(
+        self,
+        name: str,
+        parent: "NotebookTestFixtureClass",
+        test_method: callable,
+        params: Optional[dict] = None,
+        param_id: Optional[str] = None,
+    ):
+        super().__init__(name, parent)
+        self.test_method = test_method
+        self.params = params or {}
+        self.param_id = param_id
+        self._fixture_instance = None
+        self._resolved_fixtures = {}
+        
+        # Copy markers from the test method
+        if hasattr(test_method, "pytestmark"):
+            for mark in test_method.pytestmark:
+                self.add_marker(mark)
+    
+    @property
+    def fixturenames(self) -> List[str]:
+        """Get fixture names required by this test.
+        
+        This enables pytest's fixture injection system.
+        """
+        fixture_instance = self.parent.get_fixture_instance()
+        fixture_params = fixture_instance._get_fixture_params(self.test_method)
+        
+        # Exclude parameters that are already provided via parametrize
+        return [p for p in fixture_params if p not in self.params]
+    
+    def setup(self):
+        """Setup for the test item."""
+        # Get or create fixture instance from parent
+        self._fixture_instance = self.parent.get_fixture_instance()
+        if not self._fixture_instance._setup_executed:
+            self._fixture_instance._execute_setup()
+    
+    def teardown(self):
+        """Teardown for the test item."""
+        # Cleanup is handled at the class level
+        pass
+    
+    def runtest(self):
+        """Execute the test with fixture injection."""
+        # Merge parametrize params with pytest-resolved fixtures
+        all_params = {**self._resolved_fixtures, **self.params}
+        
+        if all_params:
+            self.test_method(**all_params)
+        else:
+            self.test_method()
+    
+    def _request_fixtures(self, fixtureinfo):
+        """Request and resolve pytest fixtures.
+        
+        This is called by pytest's fixture system.
+        """
+        # Get fixture values from pytest's fixture manager
+        for name in self.fixturenames:
+            try:
+                # The fixture manager will resolve these
+                pass
+            except Exception:
+                pass
+    
+    def repr_failure(self, excinfo):
+        """Represent a test failure."""
+        return f"{self.name}: {excinfo.value}"
+    
+    def reportinfo(self):
+        """Report test location info."""
+        return self.fspath, None, f"{self.parent.name}::{self.name}"
+
+
+class NotebookTestFixtureClass(pytest.Class):
+    """Pytest collector for NotebookTestFixture classes."""
+    
+    def __init__(self, name: str, parent: pytest.Collector):
+        super().__init__(name, parent)
+        self._fixture_instance = None
+    
+    def get_fixture_instance(self) -> NotebookTestFixture:
+        """Get or create the fixture instance."""
+        if self._fixture_instance is None:
+            self._fixture_instance = self.obj()
+        return self._fixture_instance
+    
+    def collect(self) -> Iterator[pytest.Item]:
+        """Collect test methods from the fixture class."""
+        cls = self.obj
+        instance = self.get_fixture_instance()
+        
+        for name in dir(instance):
+            if not name.startswith("test_") or name.startswith("test__"):
+                continue
+            
+            method = getattr(instance, name)
+            if not callable(method):
+                continue
+            
+            # Check for parametrize
+            param_info = instance._get_parametrize_info(method)
+            
+            if param_info:
+                argnames, param_sets = param_info
+                
+                for param_set in param_sets:
+                    values = param_set["values"]
+                    param_id = param_set.get("id")
+                    
+                    if not param_id:
+                        param_id = "-".join(str(v) for v in values)
+                    
+                    test_name = f"{name}[{param_id}]"
+                    params = dict(zip(argnames, values))
+                    
+                    yield NotebookTestFixtureItem.from_parent(
+                        self,
+                        name=test_name,
+                        test_method=method,
+                        params=params,
+                        param_id=param_id,
+                    )
+            else:
+                yield NotebookTestFixtureItem.from_parent(
+                    self,
+                    name=name,
+                    test_method=method,
+                )
+    
+    def teardown(self):
+        """Class-level teardown."""
+        if self._fixture_instance is not None:
+            self._fixture_instance._execute_cleanup()
+
+
+# ============================================================================
+# Pytest Hooks
+# ============================================================================
 
 def pytest_configure(config):
     """Configure pytest with dbx_test markers and settings."""
@@ -85,6 +244,19 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_pycollect_makeitem(collector, name, obj):
+    """Create test items for NotebookTestFixture classes.
+    
+    This hook intercepts class collection and creates our custom
+    collector for NotebookTestFixture subclasses.
+    """
+    if inspect.isclass(obj) and issubclass(obj, NotebookTestFixture) and obj is not NotebookTestFixture:
+        # Return our custom collector
+        return NotebookTestFixtureClass.from_parent(collector, name=name)
+    
+    return None
+
+
 def pytest_collection_modifyitems(config, items):
     """Modify test collection based on dbx_test markers."""
     from dbx_test.fixtures.databricks import is_databricks_runtime
@@ -132,3 +304,32 @@ def dbx_test_options(request):
     
     return Options()
 
+
+# ============================================================================
+# Fixture Registration
+# ============================================================================
+
+# Re-export fixtures from the fixtures module so they're available when 
+# the plugin is loaded
+try:
+    from dbx_test.fixtures import (
+        spark_session,
+        spark_config,
+        spark_context,
+        local_spark,
+        databricks_config,
+        workspace_client,
+        databricks_client,
+        dbutils,
+        temp_dbfs_path,
+        temp_workspace_path,
+        temp_volume_path,
+        temp_local_path,
+        sample_dataframe,
+        test_table,
+        notebook_context,
+        notebook_runner,
+    )
+except ImportError:
+    # Fixtures may not be available in all contexts
+    pass

@@ -62,6 +62,14 @@ from dbx_test.fixtures.notebook import (
     notebook_test_result,
 )
 
+from dbx_test.fixtures.injection import (
+    notebook_fixture,
+    register_fixture,
+    get_global_registry,
+    FixtureRegistry,
+    FixtureScope,
+)
+
 __all__ = [
     # Spark fixtures
     "spark_session",
@@ -95,5 +103,11 @@ __all__ = [
     "notebook_context",
     "notebook_runner",
     "notebook_test_result",
+    # Fixture injection
+    "notebook_fixture",
+    "register_fixture",
+    "get_global_registry",
+    "FixtureRegistry",
+    "FixtureScope",
 ]
 
